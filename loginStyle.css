@@ -1,0 +1,13 @@
+body{
+    background: linear-gradient(to right, #6a11cb, #2575fc);
+    display: flex;
+}
+
+.container{
+    background-color: black;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    border-radius: 8%;
+}
+

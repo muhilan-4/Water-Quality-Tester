@@ -1,0 +1,161 @@
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+// OLED display settings
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET    -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// Pin definitions
+const int tdsPin = 15;  // TDS sensor connected to analog pin 34
+const int turbidityPin = 34;  // Turbidity sensor on analog pin 35
+const int phPin = 36;  // pH sensor on analog pin 36
+
+// Calibration constants
+const float VREF = 3.3;  // Reference voltage for ESP32 (3.3V)
+const float TDS_FACTOR = 0.5;  // Conversion factor for TDS
+const float PH_CALIBRATION = 0.05;  // Calibration factor for pH (adjust for your sensor)
+
+// Wi-Fi and AWS IoT settings
+const char* ssid = "your_WIFI_SSID";      // Replace with your Wi-Fi SSID
+const char* password = "your_WIFI_PWD";  // Replace with your Wi-Fi password
+const char* mqtt_broker = "your-aws-iot-endpoint.amazonaws.com"; // Replace with your AWS IoT endpoint
+const int mqtt_port = 8883;
+const char* mqtt_topic = "esp32/water_quality";
+
+// AWS IoT certificates
+const char* root_ca = \
+"-----BEGIN CERTIFICATE-----\n" \
+"Your_Root_CA_Content_Here\n" \
+"-----END CERTIFICATE-----";
+
+const char* client_cert = \
+"-----BEGIN CERTIFICATE-----\n" \
+"Your_Client_Certificate_Here\n" \
+"-----END CERTIFICATE-----";
+
+const char* private_key = \
+"-----BEGIN PRIVATE KEY-----\n" \
+"Your_Private_Key_Here\n" \
+"-----END PRIVATE KEY-----";
+
+// WiFi and MQTT clients
+WiFiClientSecure espClient;
+PubSubClient client(espClient);
+
+// Function to convert analog value to voltage
+float readVoltage(int pin) {
+  int analogValue = analogRead(pin);
+  return analogValue * (VREF / 4095.0);  // ESP32 has a 12-bit ADC, so 4095 is the max value
+}
+
+// Function to calculate TDS in ppm
+float calculateTDS(float voltage) {
+  float tdsValue = (voltage / VREF) * 1000;  // Convert voltage to TDS in ppm
+  return tdsValue * TDS_FACTOR;  // Apply TDS conversion factor
+}
+
+// Function to calculate pH
+float calculatePH(float voltage) {
+  float phValue = 3.5 * voltage + PH_CALIBRATION;
+  return phValue;
+}
+
+// Connect to AWS IoT Core
+void connectAWSIoT() {
+  while (!client.connected()) {
+    Serial.println("Connecting to AWS IoT...");
+    if (client.connect("ESP32_Water_Quality_Client")) {
+      Serial.println("Connected to AWS IoT");
+    } else {
+      Serial.print("Failed with state ");
+      Serial.println(client.state());
+      delay(2000);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  // Connect to Wi-Fi
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println("Connecting to WiFi...");
+  }
+  Serial.println("Connected to WiFi");
+
+  // Configure secure connection
+  espClient.setCACert(root_ca);
+  espClient.setCertificate(client_cert);
+  espClient.setPrivateKey(private_key);
+
+  // Configure MQTT client
+  client.setServer(mqtt_broker, mqtt_port);
+
+  // Initialize OLED display
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { 
+    Serial.println(F("SSD1306 allocation failed"));
+    for (;;); // Loop forever if display initialization fails
+  }
+  display.display();
+  delay(1000);
+  display.clearDisplay();
+  
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.println("Water Quality Sensors");
+  display.display();
+  delay(2000);
+
+  // Connect to AWS IoT
+  connectAWSIoT();
+}
+
+void loop() {
+  if (!client.connected()) {
+    connectAWSIoT();
+  }
+  client.loop();
+
+  // Read sensor voltages
+  float tdsVoltage = readVoltage(tdsPin);
+  float turbidityVoltage = readVoltage(turbidityPin);
+  float phVoltage = readVoltage(phPin);
+
+  // Calculate actual values
+  float tds = calculateTDS(tdsVoltage);
+  float turbidity = turbidityVoltage * 100;  // Placeholder for turbidity (adjust as needed)
+  float ph = calculatePH(phVoltage);
+
+  // Output values to Serial Monitor
+  Serial.print("TDS: "); Serial.print(tds); Serial.println(" ppm");
+  Serial.print("Turbidity: "); Serial.print(turbidity); Serial.println(" NTU");
+  Serial.print("pH: "); Serial.println(ph);
+
+  // Display values on OLED
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.println("Sensor Readings:");
+  display.setCursor(0, 10);
+  display.print("TDS: "); display.print(tds); display.println(" ppm");
+  display.setCursor(0, 20);
+  display.print("Turbidity: "); display.print(turbidity); display.println(" NTU");
+  display.setCursor(0, 30);
+  display.print("pH: "); display.println(ph);
+  display.display();
+
+  // Prepare and publish JSON data to AWS IoT
+  String payload = "{\"TDS\":" + String(tds) +
+                   ",\"Turbidity\":" + String(turbidity) +
+                   ",\"pH\":" + String(ph) + "}";
+  client.publish(mqtt_topic, payload.c_str());
+  delay(5000);  // Send data every 5 seconds
+}
